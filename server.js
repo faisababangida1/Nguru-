@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const Anthropic = require('@anthropic-ai/sdk');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -8,9 +8,8 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+// Initialize Gemini AI
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const userStore = new Map();
 
@@ -64,13 +63,13 @@ app.post('/api/lecture', async (req, res) => {
 
     console.log('Generating lecture for:', topic);
 
-    const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 4000,
-      system: NGURU_SYSTEM_PROMPT,
-      messages: [{
-        role: 'user',
-        content: `Provide a comprehensive, detailed lecture explaining: ${topic}
+    // Get Gemini model
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+
+    // Create the prompt
+    const prompt = `${NGURU_SYSTEM_PROMPT}
+
+User asked: Provide a comprehensive, detailed lecture explaining: ${topic}
 
 Remember:
 - This is a full educational lecture, not a brief answer
@@ -78,11 +77,12 @@ Remember:
 - Explain the real science/mechanics/principles
 - Use HTML formatting for structure
 - Aim for deep understanding, not surface-level facts
-- Include why things work, not just what happens`
-      }]
-    });
+- Include why things work, not just what happens`;
 
-    const lectureContent = message.content[0].text;
+    // Generate content
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const lectureContent = response.text();
 
     if (userId) {
       if (!userStore.has(userId)) {
@@ -95,9 +95,7 @@ Remember:
       
       const userData = userStore.get(userId);
       userData.currentTopic = topic;
-      userData.conversationHistory = [
-        { role: 'assistant', content: lectureContent }
-      ];
+      userData.conversationHistory = [lectureContent];
       userData.learningProfile.topicsExplored.push({
         topic,
         timestamp: new Date().toISOString(),
@@ -135,26 +133,29 @@ app.post('/api/question', async (req, res) => {
       conversationHistory = userStore.get(userId).conversationHistory;
     }
 
-    const messages = [
-      ...conversationHistory,
-      { role: 'user', content: question }
-    ];
+    // Get Gemini model
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
 
-    const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 2000,
-      system: NGURU_SYSTEM_PROMPT + `\n\nContext: You previously provided a comprehensive lecture about "${topic}". The user is now asking a follow-up question. Identify their knowledge gap and explain clearly, building on what was already covered.`,
-      messages: messages
-    });
+    // Build conversation context
+    let contextPrompt = `${NGURU_SYSTEM_PROMPT}
 
-    const answer = message.content[0].text;
+Context: You previously provided a comprehensive lecture about "${topic}".
+
+Previous conversation:
+${conversationHistory.join('\n\n')}
+
+User's follow-up question: ${question}
+
+Instructions: Identify their knowledge gap and explain clearly, building on what was already covered. Use HTML formatting.`;
+
+    // Generate answer
+    const result = await model.generateContent(contextPrompt);
+    const response = await result.response;
+    const answer = response.text();
 
     if (userId && userStore.has(userId)) {
       const userData = userStore.get(userId);
-      userData.conversationHistory.push(
-        { role: 'user', content: question },
-        { role: 'assistant', content: answer }
-      );
+      userData.conversationHistory.push(`User: ${question}`, `Nguru: ${answer}`);
     }
 
     res.json({
@@ -198,19 +199,17 @@ app.get('/api/profile/:userId', (req, res) => {
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    message: 'Nguru API is running',
+    message: 'Nguru API is running with Gemini',
     timestamp: new Date().toISOString()
   });
 });
 
 app.listen(PORT, () => {
   console.log('🧠 Nguru Backend Server running on port', PORT);
-  console.log('📚 Ready to provide deep understanding!');
+  console.log('📚 Ready to provide deep understanding with Gemini!');
   console.log('🌍 Health check:', `http://localhost:${PORT}/health`);
   
-  if (!process.env.ANTHROPIC_API_KEY) {
-    console.warn('⚠️  WARNING: ANTHROPIC_API_KEY not set!');
+  if (!process.env.GEMINI_API_KEY) {
+    console.warn('⚠️  WARNING: GEMINI_API_KEY not set!');
   }
 });
-
-module.exports = app;
